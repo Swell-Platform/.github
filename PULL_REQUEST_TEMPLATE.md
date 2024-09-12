@@ -1,5 +1,3 @@
-<!--- Provide the number of ticket below. Replace the "ID" with the actual ticket number. -->
-
 ### [SCP-ID](https://swellcx.atlassian.net/browse/SCP-ID)
 
 ## Type of change
@@ -14,6 +12,7 @@
 - [ ] Depends on migration
 - [ ] Changes behind feature flag
 - [ ] Requires additional QA in non-prod environment
+- [ ] Requires Product Management notification before release
 
 ## Description of changes
 
