@@ -1,7 +1,3 @@
-<!--- Provide the number of ticket below. Replace the "ID" with the actual ticket number. -->
-
-### [SCP-ID](https://swellcx.atlassian.net/browse/SCP-ID)
-
 ## Type of change
 
 - [ ] New feature
