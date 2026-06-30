@@ -1,0 +1,9 @@
+{
+  "name": "PR auto assign and notify",
+  "description": "Request a reviewer and notify Slack when a pull request is ready.",
+  "iconName": "octicon git-pull-request",
+  "categories": [
+    "Automation",
+    "Code review"
+  ]
+}
