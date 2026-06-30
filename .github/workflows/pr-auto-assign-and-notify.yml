@@ -10,18 +10,17 @@ on:
         default: true
     secrets:
       SLACK_BOT_TOKEN:
-        required: false
+        required: true
       SLACK_CHANNEL_ID:
-        required: false
+        required: true
 
 permissions:
   contents: read
-  issues: write
   pull-requests: write
 
 jobs:
   assign-and-notify:
-    if: ${{ !github.event.pull_request.draft && github.event.pull_request.head.repo.fork == false }}
+    if: ${{ github.event.pull_request && !github.event.pull_request.draft && github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
 
     steps:
@@ -174,11 +173,6 @@ jobs:
               );
 
             const filterUnavailableReviewers = async (reviewerConfig, reviewers) => {
-              if (!process.env.SLACK_BOT_TOKEN) {
-                core.setFailed('Missing repository secret SLACK_BOT_TOKEN.');
-                return null;
-              }
-
               let availabilityChecks;
               try {
                 availabilityChecks = await Promise.all(
@@ -526,7 +520,7 @@ jobs:
             const slackMentions = resolveSlackMentions(reviewers, reviewerConfig);
             for (const reviewer of reviewers) {
               if (!reviewerConfig?.[reviewer]?.slack) {
-                core.warning(`No Slack user ID configured for GitHub user "${reviewer}". Skipping Slack mention.`);
+                core.warning(`No Slack user ID configured for GitHub user \"${reviewer}\". Skipping Slack mention.`);
               }
             }
 
@@ -538,7 +532,7 @@ jobs:
 
             const authorSlackUserId = reviewerConfig?.[author]?.slack;
             if (!authorSlackUserId) {
-              core.warning(`No Slack user ID configured for PR author "${author}". Falling back to GitHub username.`);
+              core.warning(`No Slack user ID configured for PR author \"${author}\". Falling back to GitHub username.`);
             }
 
             const assignmentSummary = `Assigned to: ${slackMentions.join(' ')}`;
@@ -555,26 +549,46 @@ jobs:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
-            channel: ${{ secrets.SLACK_CHANNEL_ID }}
-            text: "${{ steps.slack-recipient.outputs.assignment_summary }} | PR #${{ github.event.pull_request.number }}"
-            blocks:
-              - type: section
-                text:
-                  type: mrkdwn
-                  text: "*PR review requested*"
-              - type: section
-                text:
-                  type: mrkdwn
-                  text: "*Assigned to:* ${{ steps.slack-recipient.outputs.reviewer_mentions }}"
-              - type: section
-                text:
-                  type: mrkdwn
-                  text: "*Pull request:* <${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}>"
-              - type: section
-                text:
-                  type: plain_text
-                  text: "${{ github.event.pull_request.title }}"
-              - type: context
-                elements:
-                  - type: mrkdwn
-                    text: "Requested by ${{ steps.slack-recipient.outputs.author_reference }}"
+            {
+              "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
+              "text": ${{ toJson(format('{0} | PR #{1}', steps.slack-recipient.outputs.assignment_summary, github.event.pull_request.number)) }},
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*PR review requested*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJson(format('*Assigned to:* {0}', steps.slack-recipient.outputs.reviewer_mentions)) }}
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJson(format('*Pull request:* <{0}|PR #{1}>', github.event.pull_request.html_url, github.event.pull_request.number)) }}
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "plain_text",
+                    "text": ${{ toJson(github.event.pull_request.title) }}
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ${{ toJson(format('Requested by {0}', steps.slack-recipient.outputs.author_reference)) }}
+                    }
+                  ]
+                }
+              ]
+            }
