@@ -57,10 +57,13 @@ jobs:
               typeof value.slack === 'string' &&
               value.slack.trim().length > 0;
 
-            const getConfiguredReviewerPool = (reviewerConfig, prAuthorLogin) =>
-              Object.entries(reviewerConfig)
-                .filter(([username, value]) => username !== prAuthorLogin && hasSlackUserId(value))
+            const getConfiguredReviewerPool = (reviewerConfig, excludedLogins) => {
+              const excludedLoginSet = new Set(excludedLogins);
+
+              return Object.entries(reviewerConfig)
+                .filter(([username, value]) => !excludedLoginSet.has(username) && hasSlackUserId(value))
                 .map(([username]) => username);
+            };
 
             const selectReviewer = (eligiblePool, reviewerSelectionScores, random = Math.random) => {
               if (!Array.isArray(eligiblePool) || eligiblePool.length === 0) {
@@ -121,6 +124,9 @@ jobs:
 
             const pr = context.payload.pull_request;
             const prAuthorLogin = pr.user.login;
+            const assigneeLogins = (pr.assignees ?? [])
+              .filter((assignee) => assignee?.type !== 'Bot' && typeof assignee?.login === 'string')
+              .map((assignee) => assignee.login);
             const currentHeadSha = pr.head.sha;
             const requestedHumanReviewers = (pr.requested_reviewers ?? []).filter(
               (reviewer) => reviewer?.type !== 'Bot',
@@ -391,11 +397,20 @@ jobs:
               return;
             }
 
-            const configuredPool = getConfiguredReviewerPool(reviewerConfig, prAuthorLogin);
+            if (assigneeLogins.length > 0) {
+              core.info(
+                `Excluding PR assignees from the reviewer pool: ${assigneeLogins.join(', ')}.`,
+              );
+            }
+
+            const configuredPool = getConfiguredReviewerPool(reviewerConfig, [
+              prAuthorLogin,
+              ...assigneeLogins,
+            ]);
 
             if (configuredPool.length === 0) {
               core.setFailed(
-                'No eligible reviewers with Slack IDs remain after excluding the PR author.',
+                'No eligible reviewers with Slack IDs remain after excluding the PR author and assignees.',
               );
               return;
             }
@@ -407,7 +422,7 @@ jobs:
 
             if (eligiblePool.length === 0) {
               core.setFailed(
-                'No eligible reviewers remain after excluding the PR author and unavailable Slack statuses.',
+                'No eligible reviewers remain after excluding the PR author, assignees, and unavailable Slack statuses.',
               );
               return;
             }
