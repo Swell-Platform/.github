@@ -22,6 +22,10 @@ jobs:
   assign-and-notify:
     if: ${{ github.event.pull_request && !github.event.pull_request.draft && github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: pr-reviewer-round-robin-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
 
     steps:
       - name: Select reviewer routing
@@ -65,29 +69,16 @@ jobs:
                 .map(([username]) => username);
             };
 
-            const selectReviewer = (eligiblePool, reviewerSelectionScores, random = Math.random) => {
-              if (!Array.isArray(eligiblePool) || eligiblePool.length === 0) {
-                return null;
+            const selectReviewer = (reviewerOrder, eligiblePool, lastReviewer) => {
+              const startIndex = reviewerOrder.indexOf(lastReviewer);
+              for (let offset = 1; offset <= reviewerOrder.length; offset += 1) {
+                const reviewer = reviewerOrder[(startIndex + offset) % reviewerOrder.length];
+                if (eligiblePool.includes(reviewer)) {
+                  return reviewer;
+                }
               }
 
-              const lowestTodayAssignmentCount = Math.min(
-                ...eligiblePool.map((reviewer) => reviewerSelectionScores[reviewer].todayAssignments),
-              );
-              const lowestTodayAssignmentPool = eligiblePool.filter(
-                (reviewer) =>
-                  reviewerSelectionScores[reviewer].todayAssignments === lowestTodayAssignmentCount,
-              );
-              const lowestActiveAssignmentCount = Math.min(
-                ...lowestTodayAssignmentPool.map(
-                  (reviewer) => reviewerSelectionScores[reviewer].activeAssignments,
-                ),
-              );
-              const lowestLoadPool = lowestTodayAssignmentPool.filter(
-                (reviewer) =>
-                  reviewerSelectionScores[reviewer].activeAssignments === lowestActiveAssignmentCount,
-              );
-
-              return lowestLoadPool[Math.floor(random() * lowestLoadPool.length)];
+              return null;
             };
 
             const UNAVAILABLE_STATUS_PATTERN =
@@ -122,7 +113,10 @@ jobs:
               return UNAVAILABLE_STATUS_PATTERN.test(statusValue);
             };
 
-            const pr = context.payload.pull_request;
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+            });
             const prAuthorLogin = pr.user.login;
             const assigneeLogins = (pr.assignees ?? [])
               .filter((assignee) => assignee?.type !== 'Bot' && typeof assignee?.login === 'string')
@@ -214,126 +208,45 @@ jobs:
               return availabilityChecks.filter(Boolean);
             };
 
-            const getReviewerSelectionScores = async (reviewers) => {
-              const reviewerSet = new Set(reviewers);
-              const startOfToday = new Date();
-              startOfToday.setHours(0, 0, 0, 0);
-              const startOfTodayTimestamp = startOfToday.getTime();
-              const scores = Object.fromEntries(
-                reviewers.map((reviewer) => [
-                  reviewer,
-                  {
-                    todayAssignments: 0,
-                    activeAssignments: 0,
-                  },
-                ]),
-              );
-              const getCreditedReviewers = (pullRequest) => {
-                const creditedReviewers = new Set();
-                for (const reviewer of pullRequest.requested_reviewers ?? []) {
-                  if (reviewer?.type !== 'Bot' && reviewerSet.has(reviewer.login)) {
-                    creditedReviewers.add(reviewer.login);
-                  }
-                }
-                return creditedReviewers;
-              };
-              const getTodayHumanReviewers = async (pullNumber) => {
-                const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: pullNumber,
-                  per_page: 100,
-                });
-                const creditedReviewers = new Set();
-
-                for (const review of reviews) {
-                  if (
-                    review.user?.type === 'Bot' ||
-                    typeof review.user?.login !== 'string' ||
-                    !reviewerSet.has(review.user.login) ||
-                    review.state === 'DISMISSED'
-                  ) {
-                    continue;
-                  }
-
-                  const submittedAtTimestamp = new Date(review.submitted_at).getTime();
-                  if (submittedAtTimestamp < startOfTodayTimestamp) {
-                    continue;
-                  }
-
-                  creditedReviewers.add(review.user.login);
-                }
-
-                return creditedReviewers;
-              };
+            const getLastAssignedReviewer = async (reviewerOrder) => {
+              let latestAssignment;
 
               for await (const response of github.paginate.iterator(github.rest.pulls.list, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                ...context.repo,
                 state: 'all',
                 sort: 'updated',
                 direction: 'desc',
                 per_page: 100,
               })) {
-                let reachedPullRequestsUpdatedBeforeToday = false;
-
-                for (const recentPullRequest of response.data) {
-                  if (recentPullRequest.number === pr.number) {
-                    continue;
+                for (const pullRequest of response.data) {
+                  // Older PRs cannot contain a more recent assignment than their last update.
+                  if (latestAssignment && pullRequest.updated_at < latestAssignment.created_at) {
+                    return latestAssignment.requested_reviewer.login;
                   }
 
-                  const updatedAtTimestamp = new Date(recentPullRequest.updated_at).getTime();
-                  if (updatedAtTimestamp < startOfTodayTimestamp) {
-                    reachedPullRequestsUpdatedBeforeToday = true;
-                    break;
-                  }
+                  const events = await github.paginate(github.rest.issues.listEventsForTimeline, {
+                    ...context.repo,
+                    issue_number: pullRequest.number,
+                    per_page: 100,
+                  });
 
-                  const creditedReviewers = await getTodayHumanReviewers(recentPullRequest.number);
-                  if (creditedReviewers.size === 0) {
-                    for (const reviewer of getCreditedReviewers(recentPullRequest)) {
-                      creditedReviewers.add(reviewer);
+                  for (const event of events) {
+                    if (
+                      event.event === 'review_requested' &&
+                      event.actor?.login === 'github-actions[bot]' &&
+                      reviewerOrder.includes(event.requested_reviewer?.login) &&
+                      (!latestAssignment ||
+                        event.created_at > latestAssignment.created_at ||
+                        (event.created_at === latestAssignment.created_at &&
+                          event.id > latestAssignment.id))
+                    ) {
+                      latestAssignment = event;
                     }
                   }
-
-                  if (creditedReviewers.size === 0) {
-                    continue;
-                  }
-
-                  for (const reviewer of creditedReviewers) {
-                    scores[reviewer].todayAssignments += 1;
-                  }
-                }
-
-                if (reachedPullRequestsUpdatedBeforeToday) {
-                  break;
                 }
               }
 
-              for await (const response of github.paginate.iterator(github.rest.pulls.list, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                state: 'open',
-                sort: 'updated',
-                direction: 'desc',
-                per_page: 100,
-              })) {
-                for (const openPullRequest of response.data) {
-                  if (openPullRequest.number === pr.number) {
-                    continue;
-                  }
-
-                  const creditedReviewers = getCreditedReviewers(openPullRequest);
-                  if (creditedReviewers.size === 0) {
-                    continue;
-                  }
-
-                  for (const reviewer of creditedReviewers) {
-                    scores[reviewer].activeAssignments += 1;
-                  }
-                }
-              }
-
-              return scores;
+              return latestAssignment?.requested_reviewer.login;
             };
 
             const getApprovedReviewersForCurrentHead = async () => {
@@ -427,9 +340,10 @@ jobs:
               return;
             }
 
-            const reviewerSelectionScores = await getReviewerSelectionScores(eligiblePool);
-            const reviewer = selectReviewer(eligiblePool, reviewerSelectionScores);
-            core.info(`Reviewer selection scores: ${JSON.stringify(reviewerSelectionScores)}`);
+            const reviewerOrder = getConfiguredReviewerPool(reviewerConfig, []);
+            const lastReviewer = await getLastAssignedReviewer(reviewerOrder);
+            const reviewer = selectReviewer(reviewerOrder, eligiblePool, lastReviewer);
+            core.info(`Previous round-robin reviewer: ${lastReviewer ?? 'none'}`);
             core.info(`Selected reviewer: ${reviewer}`);
             setSelectionOutputs({
               reviewers: [reviewer],
