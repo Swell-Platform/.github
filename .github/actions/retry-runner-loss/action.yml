@@ -1,0 +1,19 @@
+name: Retry jobs interrupted by runner loss
+description: Retry eligible failed jobs once after confirmed runner loss
+
+inputs:
+  policies:
+    description: JSON recovery policies keyed by workflow file path
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+      env:
+        RECOVERY_ACTION_PATH: ${{ github.action_path }}
+        RECOVERY_POLICIES: ${{ inputs.policies }}
+      with:
+        script: |
+          const retryRunnerLoss = require(`${process.env.RECOVERY_ACTION_PATH}/retry-runner-loss.cjs`);
+          await retryRunnerLoss({ github, context, core, policies: JSON.parse(process.env.RECOVERY_POLICIES) });
