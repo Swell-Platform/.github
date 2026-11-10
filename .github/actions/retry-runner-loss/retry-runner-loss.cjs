@@ -33,7 +33,7 @@ module.exports = async ({ github, context, core, policies }) => {
       per_page: 100,
     }
   );
-  const baseName = (job) => job.name.replace(/ \(.*\)$/, "");
+  const baseName = (job) => job.name.split(" (", 1)[0];
   let preview;
   if (policy.pullRequestLabel) {
     const match = jobs
