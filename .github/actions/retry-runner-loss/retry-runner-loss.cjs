@@ -33,7 +33,17 @@ module.exports = async ({ github, context, core, policies }) => {
       per_page: 100,
     }
   );
-  const baseName = (job) => job.name.split(" (", 1)[0];
+  const jobNames = [
+    ...policy.jobs,
+    policy.dependencyGate,
+    policy.supersessionJob,
+  ]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  const baseName = (job) =>
+    jobNames.find((name) => job.name === name) ??
+    jobNames.find((name) => job.name.startsWith(`${name} (`)) ??
+    job.name;
   let preview;
   if (policy.pullRequestLabel) {
     const match = jobs
